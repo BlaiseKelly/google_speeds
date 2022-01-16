@@ -9,6 +9,7 @@ library(lwgeom)
 library(sf)
 library(dplyr)
 library(mapview)
+library(stplanr)
 
 select <- dplyr::select
 
@@ -22,7 +23,12 @@ bristol <- readRDS("data/bristol_routes.RDS")
 stockholm <- select(stockholm, ID = osm_id, geometry)
 bristol <- select(bristol, ID = link_id, geometry)
 
-## to see the routes use mapview
+## DEMO OF stplanr overline with made up numbers
+bristol$value <- runif(NROW(bristol), min=5, max=100) 
+bristol_split <- overline(bristol, attrib = "value")
+mapview(bristol_split)
+
+## to see the routes used for api request
 mapview(bristol)+stockholm
 
 all_links <- stockholm
