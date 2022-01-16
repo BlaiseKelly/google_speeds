@@ -8,6 +8,7 @@ library(openair)
 library(lwgeom)
 library(sf)
 library(dplyr)
+library(mapview)
 
 select <- dplyr::select
 
@@ -20,6 +21,9 @@ bristol <- readRDS("data/bristol_routes.RDS")
 
 stockholm <- select(stockholm, ID = osm_id, geometry)
 bristol <- select(bristol, ID = link_id, geometry)
+
+## to see the routes use mapview
+mapview(bristol)+stockholm
 
 all_links <- stockholm
 
