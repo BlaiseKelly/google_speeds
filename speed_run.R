@@ -22,8 +22,8 @@ select <- dplyr::select
 api_key <- ""
 
 ##load links
-stockholm <- readRDS("data/google_speed_stockholm.RDS") |> 
-  select(ID = osm_id, geometry)
+# stockholm <- readRDS("data/google_speed_stockholm.RDS") |> 
+#   select(ID = osm_id, geometry)
 
 # create a geo referenced point
 area <- st_point(c(106.895,47.916)) |> 
@@ -45,27 +45,18 @@ osm_drive = osmactive::get_driving_network(x$osm_lines)
 # how much will it cost?
 costs <- get_costs(links = osm_drive)
 
-# get speed data
+# get speed data using Google API
 speed_dat <- get_future_week_speeds(osm_drive)
 
 #saveRDS(speed_dat, "data/ulaanbaater.RDS")
 
+# alternatively read in from data folder
+speed_dat <- readRDS("data/ulaanbaater.RDS")
+
+# swap UTC date with date for local area
 speed_dat$date_new <- with_tz(speed_dat$date, "Asia/Ulaanbaatar")
 
-
-speeds_ALL <- transmute(speed_dat, date, day, ID, speed, speed_source = "Google API")
-
-write.csv(speeds_ALL, paste0("outputs/all_speedz_", Sys.Date(), ".csv"), row.names = FALSE)
-
-##average speeds for the roads
-speeds_AVG <- timeAverage(speeds_ALL, "month", type = c("ID", "speed_source"))
-speeds_AVG <- select(speeds_AVG, -date)
-speeds_AVG <- left_join(speeds_AVG, osm_drive, by = "ID")
-write.csv(speeds_AVG, paste0("outputs/avg_speeds_", Sys.Date(), ".csv"))
-st_write(speeds_AVG, paste0("outputs/speeds_avg_", Sys.Date(), ".geojson"))
-
-S_ALL_Col <- colsplit(speed_dat$ID, "_", names = c("Main", "Sub"))
-S_ALL_Ps <- bind_cols(speed_dat, S_ALL_Col)
+#plot for each link
 dir.create("plots")
 for (eL in unique(speed_dat$ID)){
   tryCatch({
@@ -80,21 +71,21 @@ for (eL in unique(speed_dat$ID)){
   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
 }
 
-speed_plot <- speed_dat |> 
-  transmute(date = as.factor(date_new),day, ID, speed) |> 
-  left_join(osm_drive, by = "ID") |> 
-  st_set_geometry("geometry")
-
-mapview(speed_plot['speed'])
-
-
+# plot mean for all links
 p2 <- timeVariation(speed_dat, pollutant = "speed", main = paste0("speed profile of area central Ulaanbaatar, Mongolia (kph)"))
-#plot(p2, subset = "day.hour",main = paste0("Mean speed profile of all roads (kph)"))
 
+# save plot
 filename <- paste0("plots/avg_profile.png")
 png(filename, width=2000, height=1500, units="px", res=180)
 print(p2)
 dev.off()
+
+
+# join spatial data to speeds and adjust date format for tmap
+speed_plot <- speed_dat |> 
+  transmute(date = as.factor(date_new),day, ID, speed) |> 
+  left_join(osm_drive, by = "ID") |> 
+  st_set_geometry("geometry")
 
 # get background map
 bg <- basemaps::basemap_raster(speed_plot, map_service = "carto", map_type = "light")
