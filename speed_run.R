@@ -1,5 +1,4 @@
 library(gmapsdistance)
-library(rgdal)
 library(lubridate)
 library(tidyverse)
 library(googleway)
@@ -10,6 +9,12 @@ library(sf)
 library(dplyr)
 library(mapview)
 library(stplanr)
+library(osmactive)
+library(osmdata)
+library(tmap)
+library(tmap.networks)
+
+source("R/get.R")
 
 select <- dplyr::select
 
@@ -17,167 +22,108 @@ select <- dplyr::select
 api_key <- ""
 
 ##load links
-stockholm <- readRDS("data/google_speed_stockholm.RDS")
-bristol <- readRDS("data/bristol_routes.RDS")
+stockholm <- readRDS("data/google_speed_stockholm.RDS") |> 
+  select(ID = osm_id, geometry)
 
-stockholm <- select(stockholm, ID = osm_id, geometry)
-bristol <- select(bristol, ID = link_id, geometry)
+# create a geo referenced point
+area <- st_point(c(106.895,47.916)) |> 
+  st_sfc(crs = 4326) |> 
+  st_buffer(100)
 
-## DEMO OF stplanr overline with made up numbers
-bristol$value <- runif(NROW(bristol), min=5, max=100) 
-bristol_split <- overline(bristol, attrib = "value")
-mapview(bristol_split)
+area_bb <- st_bbox(area)
 
-## to see the routes used for api request
-mapview(bristol)+stockholm
+##download landuse from osm
+x <- opq(bbox = area_bb) %>%
+  add_osm_feature(key = c('highway')) %>%
+  osmdata_sf()
 
-all_links <- stockholm
+##extract rd data and trim to the main roads
+osm_drive = osmactive::get_driving_network(x$osm_lines) 
+  select(ID = osm_id, highway) |> 
+  filter(highway %in% c("primary", "trunk", "trunk_link", "tertiary"))
 
-##Work out approximate cost of running the API with all the links (?)
-Cost_Estimate <- NROW(unique(all_links$ID))*168*2*0.5/100
+# how much will it cost?
+costs <- get_costs(links = osm_drive)
 
-spare_links <- floor((200-Cost_Estimate)/(168*2*0.5/100))
-bristol <- bristol[1:spare_links,]
-all_links <- rbind(all_links, bristol)
+# get speed data
+speed_dat <- get_future_week_speeds(osm_drive)
 
-##Work out approximate cost of running the API with all the links (?)
-Cost_Estimate <- NROW(unique(all_links$ID))*168*2*0.5/100
+#saveRDS(speed_dat, "data/ulaanbaater.RDS")
 
-nextMonday <- function(date) {
-  date <- ymd(date)
-  .day <- wday(date)
-  shift <- ifelse(as.numeric(.day) < 2, 0, 7)
-  date + days(2 - as.numeric(.day) + shift)
-}
-
-monday <- nextMonday(Sys.Date())
-sunday <- monday+6
-
-#set the date Google will search for, this should be a FUTURE DATE that represents Monday to Sunday
-kr8d8 <- data.frame(date = seq(
-  from=as.POSIXct(paste(monday, "0:00"), tz="UTC"),
-  to=as.POSIXct(paste(sunday, "23:00"), tz="UTC"),
-  by="hour"
-)  )
+speed_dat$date_new <- with_tz(speed_dat$date, "Asia/Ulaanbaatar")
 
 
-kr8d8$DoW <- wday(kr8d8$date)
-kr8d8$hr_week <- seq(1:NROW(kr8d8))
-kr8d8$dayt <- hour(kr8d8$date)
-kr8d8$dayt <- as.numeric(kr8d8$dayt)
-kr8d8$Hour <- kr8d8$dayt+1
-kr8d8$Day_Name <- weekdays(kr8d8$date)
-
-kr8d8_hr_min <- colsplit(kr8d8$date," ", names = c("Date", "hh_mm_ss"))
-kr8d8$hh_mm_ss <- kr8d8_hr_min$hh_mm_ss
-kr8d8$Date <- kr8d8_hr_min$Date
-
-Big_speedz_list <- list()
-Big_distance_list <- list()
-Big_time_list <- list()
-
-Links <- unique(all_links$ID)
-L <- Links[1]
-for(L in Links) {
-  
-  Section <- filter(all_links, ID == L)
-  Section <- data.frame(st_coordinates(Section))
-  
-  Start <- paste0(Section$Y[1], "+", Section$X[1])
-  Finish <- paste0(Section$Y[NROW(Section)], "+", Section$X[NROW(Section)])
-  ForWeek <- kr8d8 %>% 
-    mutate(Start = Start,
-           Finish = Finish)
-  datez <- unique(ForWeek$hr_week)
-  
-  speed_list <- list()
-  distance_list <- list()
-  time_list <- list()
-  D <- datez[1]
-  for (D in datez){
-    tryCatch({
-      df <- filter(ForWeek, hr_week == D)
-      dep_d8 <- as.character(df$Date)
-      dep_thyme <- as.character(df[,7])
-      
-      ## make request - THIS STEP COSTS MONEY
-    calcs_SF <- gmapsdistance(origin = Start, destination = Finish,
-                                mode = "driving", key = api_key,
-                                dep_date = dep_d8, dep_time = dep_thyme, traffic_model = "best_guess")
-      
-      
-      Outs_SF <- do.call(rbind, calcs_SF)
-      time_SF <- as.numeric(Outs_SF[1,1])
-      distance_SF <- as.numeric(Outs_SF[2,1])
-      
-      
-      speed_SF <- (distance_SF/time_SF)*3.6
-      
-      Speedz <- select(df, date, day = Day_Name)
-      Speedz$ID <- L
-      Speedz$SF <- speed_SF
-      
-      distancez <- select(df, date, day = Day_Name)
-      distancez$ID <- L
-      distancez$SF <- distance_SF
-      
-      timez <- select(df, date, day = Day_Name)
-      timez$ID <- L
-      timez$SF <- time_SF
-      
-      speed_list[[D]] <- Speedz
-      distance_list[[D]] <- distancez
-      time_list[[D]] <- timez
-      whereupto <- paste0(L,"_", D)
-      print(whereupto)
-      # update GUI console
-      flush.console()
-    }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
-    
-  }
-  
-  SL <- do.call(rbind, speed_list)
-  DL <- do.call(rbind, distance_list)
-  TL <- do.call(rbind, time_list)
-  
-  Big_speedz_list[[L]] <- SL
-  Big_distance_list[[L]] <- DL
-  Big_time_list[[L]] <- TL
-  
-}
-
-save.image(file = paste0("outputs/Google_run_", Sys.Date(), ".RData"))
-
-#load("outputs/Google_run_2021-08-31.RData")
-
-S_ALL <- do.call(rbind, Big_speedz_list)
-BDL_SF <- do.call(rbind, Big_distance_list)
-BTL_SF <- do.call(rbind, Big_time_list)
-
-S_ALL <- select(S_ALL, date, day, ID, speed = SF)
-
-speeds_ALL <- transmute(S_ALL, date, day, ID, speed, speed_source = "Google API")
+speeds_ALL <- transmute(speed_dat, date, day, ID, speed, speed_source = "Google API")
 
 write.csv(speeds_ALL, paste0("outputs/all_speedz_", Sys.Date(), ".csv"), row.names = FALSE)
 
 ##average speeds for the roads
 speeds_AVG <- timeAverage(speeds_ALL, "month", type = c("ID", "speed_source"))
 speeds_AVG <- select(speeds_AVG, -date)
-speeds_AVG <- left_join(speeds_AVG, all_links, by = "ID")
+speeds_AVG <- left_join(speeds_AVG, osm_drive, by = "ID")
 write.csv(speeds_AVG, paste0("outputs/avg_speeds_", Sys.Date(), ".csv"))
 st_write(speeds_AVG, paste0("outputs/speeds_avg_", Sys.Date(), ".geojson"))
 
-S_ALL_Col <- colsplit(S_ALL$ID, "_", names = c("Main", "Sub"))
-S_ALL_Ps <- bind_cols(S_ALL, S_ALL_Col)
-
-for (eL in Links){
+S_ALL_Col <- colsplit(speed_dat$ID, "_", names = c("Main", "Sub"))
+S_ALL_Ps <- bind_cols(speed_dat, S_ALL_Col)
+dir.create("plots")
+for (eL in unique(speed_dat$ID)){
   tryCatch({
-    df2 <- filter(S_ALL, ID == eL)
+    df2 <- speed_dat |> 
+      filter(ID == eL) |> 
+      select(date = date_new, speed)
     p2 <- timeVariation(df2, pollutant = "speed", main = paste0(eL, " Weekly Speeds (kph)"))
     filename <- paste0("plots/", eL, "_", Sys.Date(), ".png")
-    png(filename, width=2000, height=1000, units="px", res=160)
-    print(p2)
+    png(filename, width=2000, height=500, units="px", res=160)
+    print(p2$plot$day.hour)
     dev.off()
   }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
 }
+
+speed_plot <- speed_dat |> 
+  transmute(date = as.factor(date_new),day, ID, speed) |> 
+  left_join(osm_drive, by = "ID") |> 
+  st_set_geometry("geometry")
+
+mapview(speed_plot['speed'])
+
+
+p2 <- timeVariation(speed_dat, pollutant = "speed", main = paste0("speed profile of area central Ulaanbaatar, Mongolia (kph)"))
+#plot(p2, subset = "day.hour",main = paste0("Mean speed profile of all roads (kph)"))
+
+filename <- paste0("plots/avg_profile.png")
+png(filename, width=2000, height=1500, units="px", res=180)
+print(p2)
+dev.off()
+
+# get background map
+bg <- basemaps::basemap_raster(speed_plot, map_service = "carto", map_type = "light")
+#bg_m <- mask(bg,st_transform(area,3857))
+
+
+# generate a date string for the plot
+d8s2plot <- speed_dat |> 
+  filter(ID == speed_plot$ID[1]) |> 
+  mutate(day = wday(date_new,label = TRUE,abbr = FALSE)) |> 
+  transmute(date_day = paste0(format(date_new), "\n", day))
+
+# set to override limit of 64 frames
+tmap_options(facet.max = 200)
+
+#assign(paste0(c,"_map"), cycle_net_c)
+tmap_mode("plot")
+tm1 <- tm_shape(bg)+
+  tm_rgb(col_alpha = 1)+
+  tm_shape(speed_plot) +
+  tm_edges(
+    col = "speed",col.scale = tm_scale_intervals(values = "gmt.seis"),
+    lwd = 4
+  )+
+  tm_legend(show = TRUE, position = c(0.77,0.20))+
+  tm_title(text = d8s2plot$date_day, position = c(0.05,0.96))+
+  tm_layout(frame = FALSE, panel.show = FALSE)+
+  tm_animate(by = "date")
+#tm_components(c("tm_legend", "tm_credits"), position = c("left", "top"), bg.color = "grey95")
+
+tmap_animation(tm1, filename = paste0("plots/speeds.gif"), width =1700, height = 3000, dpi = 300, delay = 40)
 
