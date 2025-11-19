@@ -21,7 +21,7 @@ select <- dplyr::select
 ## enter google console distance api key
 api_key <- ""
 
-##load links
+## This link in Stockholm has a count point with open access data to compare
 # stockholm <- readRDS("data/google_speed_stockholm.RDS") |> 
 #   select(ID = osm_id, geometry)
 
